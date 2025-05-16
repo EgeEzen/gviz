@@ -1,0 +1,507 @@
+GVIZ Visualization
+
+```{r message=FALSE, warning=FALSE}
+# version
+# if (!require("BiocManager", quietly = TRUE))
+#   install.packages("BiocManager")
+# BiocManager::install()
+# 
+# install.packages(devtools)
+# BiocManager::install(c("Gviz","GenomicRanges","AnnotationHub","rtracklayer","GenomicInteractions"),force=TRUE)
+
+library(Gviz)
+library(RColorBrewer)
+library(rtracklayer)
+library(GenomicRanges)
+library(AnnotationHub)
+library(GenomicInteractions)
+library(Rsamtools)
+library(GenomicAlignments)
+library(tidyverse)
+
+```
+
+define genomic locations
+
+put your ucsc locus here!
+
+```{r}
+# define genome & UCSC locus
+gen <- "hg38"
+ucsc_locus <- "chr1:203,178,076-203,188,592"
+
+# extract chromosome and genomic range
+parse_ucsc_locus <- function(locus) {
+  clean_locus <- gsub(",", "", locus)
+  parts <- strsplit(clean_locus, "[:-]")[[1]]
+  list(chrom = parts[1], start = as.numeric(parts[2]), end = as.numeric(parts[3]))
+}
+
+genomic_region <- parse_ucsc_locus(ucsc_locus)
+chrom <- genomic_region$chrom
+start <- genomic_region$start
+end <- genomic_region$end
+
+# add padding for visualization
+pad <- function(value, range) value + (0.005 * range)
+minbase <- pad(start, end - start)
+maxbase <- pad(end, end - start)
+
+#or not ? 
+minbase <- start
+maxbase <- end
+
+
+```
+
+read the files
+
+```{r}
+# set the working directory
+setwd("~/Desktop/PhD/2025 First Term/gviz")
+
+base_dir = "~/Desktop/PhD/"
+
+# read ideogram
+ideogram_data <- read.csv("~/Desktop/PhD/2024 First Term/DNA Methylation/Gviz/ideogram_data.csv")
+
+#patient data is read
+patients <- read.csv("~/Desktop/PhD/2024 First Term/DNA Methylation/Merged_samples/three_of_them_separately/patients_new.csv")
+patients_wo_outlier <- patients[-43,]
+
+#RA
+patients_RA <- patients_wo_outlier[patients_wo_outlier$Final_Group == "RA",]
+patients_RA$final_location <- c("knee","shoulder","hand","shoulder","shoulder","hand","shoulder","hand","knee","knee","hand")
+
+#healthy and RA 
+patients_healthy_ra <- patients_wo_outlier[patients_wo_outlier$Final_Group == "RA" | patients_wo_outlier$Final_Group == "Healthy",]
+patients_healthy_ra$final_location <- ifelse(
+  patients_healthy_ra$Final_Group == "Healthy", "Healthy",
+    ifelse(patients_healthy_ra$location == "knee", "RA Knee",
+         ifelse(patients_healthy_ra$location == "shoulder", "RA Shoulder","RA Hand"
+       )
+    )
+  )
+
+#RA-healthy-vera
+patients_ra_healthy_vera <- patients_wo_outlier %>%
+  filter(Final_Group %in% c("VeRA", "RA","Healthy"))
+patients_ra_healthy_vera <- patients_ra_healthy_vera %>%
+  mutate(
+    final_location = case_when(
+      location == "knee" | location == "ankle" ~ "knee",
+      location == "shoulder" ~ "shoulder",
+      location == "wrist" | location == "hand" | location == "finger" | location == "thumb" ~ "hand"
+    )
+  )
+
+#RA-healthy-vera-OA
+patients_all <- patients_wo_outlier %>%
+  mutate(
+    final_location = case_when(
+      location == "knee" | location == "ankle" ~ "knee",
+      location == "shoulder" ~ "shoulder",
+      location == "wrist" | location == "hand" | location == "finger" | location == "thumb" | location == "PIP" ~ "hand"
+    )
+  )
+
+#RA-healthy-vera-OA only knee 
+patients_all_knee <- patients_all %>%
+  filter(final_location == "knee")
+
+#import ChIP-seq
+gr_region <- GRanges(seqnames = chrom, ranges = IRanges(start = minbase, end = maxbase))
+
+# function to import ChIP-seq data
+import_chip_seq <- function(base_dir, sample_id, mark) {
+  file_path <- file.path(base_dir, paste0(sample_id, "_", mark,"_RPGC_hg38.bw"))
+  return(import.bw(file_path, as = "GRanges", which = gr_region))
+}
+
+chip_seq_base <- file.path(base_dir, "2024 Second Term/ChIP-Seq Masoumeh/RPGC/lifted_over")
+
+chip_data <- list(
+  RA_shoulder = list(
+    H3K4me1 = import_chip_seq(chip_seq_base, "341", "H3K4me1"),
+    H3K4me3 = import_chip_seq(chip_seq_base, "341", "H3K4me3"),
+    H3K27ac = import_chip_seq(chip_seq_base, "341", "H3K27Ac"),
+    H3K27me3 = import_chip_seq(chip_seq_base, "341", "H3K27me3")
+  ),
+  RA_hand = list(
+    H3K4me1 = import_chip_seq(chip_seq_base, "316", "H3K4me1"),
+    H3K4me3 = import_chip_seq(chip_seq_base, "316", "H3K4me3"),
+    H3K27ac = import_chip_seq(chip_seq_base, "316", "H3K27Ac"),
+    H3K27me3 = import_chip_seq(chip_seq_base, "316", "H3K27me3")
+  ),
+  RA_knee = list(
+    H3K4me1 = import_chip_seq(chip_seq_base, "368", "H3K4me1"),
+    H3K4me3 = import_chip_seq(chip_seq_base, "368", "H3K4me3"),
+    H3K27ac = import_chip_seq(chip_seq_base, "368", "H3K27Ac"),
+    H3K27me3 = import_chip_seq(chip_seq_base, "368", "H3K27me3")
+  ),
+  OA_shoulder = list(
+    H3K4me1 = import_chip_seq(chip_seq_base, "384", "H3K4me1"),
+    H3K4me3 = import_chip_seq(chip_seq_base, "384", "H3K4me3"),
+    H3K27ac = import_chip_seq(chip_seq_base, "384", "H3K27Ac"),
+    H3K27me3 = import_chip_seq(chip_seq_base, "384", "H3K27me3")
+    ),
+  OA_hand = list(
+    H3K4me1 = import_chip_seq(chip_seq_base, "343", "H3K4me1"),
+    H3K4me3 = import_chip_seq(chip_seq_base, "343", "H3K4me3"),
+    H3K27ac = import_chip_seq(chip_seq_base, "343", "H3K27Ac"),
+    H3K27me3 = import_chip_seq(chip_seq_base, "343", "H3K27me3")
+    ),
+  OA_knee = list(
+    H3K4me1 = import_chip_seq(chip_seq_base, "335", "H3K4me1"),
+    H3K4me3 = import_chip_seq(chip_seq_base, "335", "H3K4me3"),
+    H3K27ac = import_chip_seq(chip_seq_base, "335", "H3K27Ac"),
+    H3K27me3 = import_chip_seq(chip_seq_base, "335", "H3K27me3")
+    ),
+  Healthy = list(
+    H3K4me1 = import_chip_seq(chip_seq_base, "88", "H3K4me1"),
+    H3K4me3 = import_chip_seq(chip_seq_base, "88", "H3K4me3"),
+    H3K27ac = import_chip_seq(chip_seq_base, "88", "H3K27ac"),
+    H3K27me3 = import_chip_seq(chip_seq_base, "88", "H3K27me3")
+  )
+)
+
+# import DNA methylation data
+dna_methyl_file <- file.path(base_dir, "2024 First Term/DNA Methylation/Merged_samples/three_of_them_separately/after_x_y_removal/RA_vs_Healthy_dna_methyl.bw")
+DNA_methyl_change <- import.bw(dna_methyl_file, as = "GRanges", which = gr_region)
+
+# define RNA-Seq BAM file paths
+rna_seq_base <- file.path(base_dir, "2024 First Term/RNA Seq 2014")
+RNA_seq_files <- list(
+  Healthy = file.path(rna_seq_base, "Healthy_82.bam"),
+  RA_knee = file.path(rna_seq_base, "RA_368.bam"),
+  RA_hand = file.path(rna_seq_base, "RA_316.bam")
+)
+
+# function to import Hi-C interactions
+import_hic <- function(file_path, name) {
+  makeGenomicInteractionsFromFile(file_path, type = "bedpe", experiment_name = name, description = name)
+}
+
+hic_files <- list(
+  unstim = file.path(base_dir, "2024 First Term/DNA Methylation/USCS Web Browser/Unstim_Chicago.bedpe"),
+  stim = file.path(base_dir, "2024 First Term/DNA Methylation/USCS Web Browser/Stim_Chicago.bedpe")
+)
+
+hic_data <- list(
+  unstim = import_hic(hic_files$unstim, "HiC Unstim."),
+  stim = import_hic(hic_files$stim, "HiC Stim.")
+)
+
+# RA Credible SNPs track
+SNPs_table <- read.table("~/Desktop/PhD/2024 First Term/DNA Methylation/USCS Web Browser/RA_all_cred_hg38_PP.bed",header = FALSE, sep = "\t")
+colnames(SNPs_table) <- c("chr", "start", "end", "score")
+SNPs_granges <- GRanges(seqnames = SNPs_table$chr,
+                        ranges = IRanges(start = SNPs_table$start, end = SNPs_table$end),
+                        score = SNPs_table$score)
+
+# cpg island track
+cisland <- read.table("~/Desktop/PhD/2024 First Term/DNA Methylation/Gviz/hg38_cpg.tabular", sep = "\t",header=TRUE,stringsAsFactors = FALSE)
+# cisland is converted into cpg_granges
+cpg_granges <- GRanges(seqnames = cisland$chrom,
+                       ranges = IRanges(start = cisland$chromStart, end = cisland$chromEnd),
+                       name = cisland$name)
+
+```
+
+read dna methylation (takes a bit of time)
+
+```{r}
+# annotation file of 450k is gathered and ordered according to chrom
+ann450k_hg38 <- read.delim("~/Desktop/PhD/2024 First Term/DNA Methylation/450k_samples/HM450.hg38.manifest.gencode.v36.tsv", header = TRUE)
+row.names(ann450k_hg38) <- ann450k_hg38$probeID
+ann450kOrd <- ann450k_hg38[order(ann450k_hg38$CpG_chrm,ann450k_hg38$CpG_beg),]
+ann450kOrd <- ann450kOrd[!is.na(ann450kOrd$CpG_beg) & !is.na(ann450kOrd$CpG_end), ]
+
+# beta values are read!
+beta_values_illumina <- read.csv("~/Desktop/PhD/2024 First Term/DNA Methylation/Merged_samples/three_of_them_separately/beta_values_illumina_all_merged.csv")
+rownames(beta_values_illumina) <- beta_values_illumina$Row.names
+beta_values_illumina$Row.names <- NULL
+
+#filter ann450kOrd so that it fits beta_values_illumina
+ann450kOrd <- ann450kOrd[ann450kOrd$probeID %in% rownames(beta_values_illumina),]
+
+```
+
+create cpgData for the track. Be careful which value you choose for cpgData
+
+```{r}
+#change the values
+beta_values_RA <- beta_values_illumina[colnames(beta_values_illumina) %in% patients_RA$ID ]
+beta_values_RA_and_healthy <- beta_values_illumina[colnames(beta_values_illumina) %in% patients_healthy_ra$ID ]
+beta_values_RA_veRa_healthy <- beta_values_illumina[colnames(beta_values_illumina) %in% patients_ra_healthy_vera$ID ]
+
+beta_values_all <- beta_values_illumina[colnames(beta_values_illumina) %in% patients_all$ID ]
+
+beta_values_all_knee <- beta_values_illumina[colnames(beta_values_illumina) %in% patients_all_knee$ID ]
+
+#order them respect to chrom 
+order_beta_values <- function(beta_values_df) {
+  beta_values_ordered <- beta_values_df[rownames(beta_values_df) %in% ann450kOrd$probeID, ]
+  beta_values_ordered <- beta_values_ordered[match(ann450kOrd$probeID, rownames(beta_values_ordered)), ]
+  beta_values_ordered <- beta_values_ordered[complete.cases(beta_values_ordered), ]
+  return (beta_values_ordered)
+}
+
+create_cpgData <- function(beta_values_df) {
+  beta_values_ordered <- order_beta_values(beta_values_df)
+  cpgData <- GRanges(seqnames=Rle(ann450kOrd$CpG_chrm),
+                     ranges=IRanges(start=ann450kOrd$CpG_beg, end=ann450kOrd$CpG_end),
+                     strand=Rle(rep("*",nrow(ann450kOrd))),
+                     betas=beta_values_ordered) 
+  return(cpgData)
+}
+#use the function
+cpgData <- create_cpgData(beta_values_RA_veRa_healthy)
+
+```
+
+create the tracks
+
+```{r}
+# CpG Islands Track
+cislandTrack <- AnnotationTrack(
+  range = cpg_granges, genome = gen, from = minbase, to = maxbase,
+  name = "CpG \nIslands",
+  fill = "#81A263", background.title = "#81A263",
+  rotation.title = 0, col = "#81A263"
+)
+
+# Default Tracks
+iTrack <- IdeogramTrack(
+  genome = gen, chromosome = chrom,
+  background.title = "transparent",
+  bands = as.data.frame(ideogram_data)
+)
+
+gTrack <- GenomeAxisTrack(
+  col = "black", cex = 0.8, fontcolor = "black",
+  background.title = "transparent"
+)
+
+rTrack <- UcscTrack(
+  genome = gen, chromosome = chrom, track = "All GENCODE V46",
+  from = minbase, to = maxbase, trackType = "GeneRegionTrack",
+  rstarts = "exonStarts", rends = "exonEnds", gene = "name",
+  symbol = "name2", transcript = "name"
+  ,strand = "strand",
+  fill = "#3C3D37", stacking = "squish", #dense or squish for without gene name or with gene name
+  name = " ENCODE V46", showId = TRUE, geneSymbol = TRUE,
+  background.title = "#3C3D37"
+)
+
+# Methylation Data Track
+patients_ra_healthy_vera$Final_Group <- factor(
+  patients_ra_healthy_vera$Final_Group,
+  levels = c("Healthy", "VeRA", "RA")
+)
+patients_ra_healthy_vera_colors <- c("#9FC2CC","#F7CFD8", "#9a2809")
+
+patients_RA$final_location <- factor(
+  patients_RA$final_location,
+  levels = c("shoulder", "hand", "knee")
+)
+patients_ra_healthy_colors <- c("#9FC2CC", "#9a2809")
+
+patients_all$Final_Group <- factor(
+  patients_all$Final_Group,
+  levels = c("Healthy","VeRA","RA","OA")
+)
+patients_all_colors <- c("#9FC2CC","#F7CFD8", "#9a2809", "#694D75")
+
+patients_all_knee$Final_Group <- factor(
+  patients_all_knee$Final_Group,
+  levels = c("Healthy","VeRA","RA","OA")
+)
+
+methTrack <- DataTrack(
+  range = cpgData, groups = patients_ra_healthy_vera$Final_Group, genome = gen,
+  chromosome = chrom, ylim = c(-0.05, 1.05), col = patients_ra_healthy_vera_colors,
+  type = c("a", "p", "confint"), name = "DNA \nMethylation",
+  from = minbase, to = maxbase, background.panel = "white",
+  legend = FALSE, background.title = "#ACB1D6"
+)
+
+# SNPs Track
+SNPs_track <- AnnotationTrack(
+  SNPs_granges, genome = gen, from = minbase, to = maxbase,
+  name = "RA Credible SNPs", chromosome = chrom,
+  fill = "#405D72", background.title = "#405D72", col = "#405D72", rotation.title = 0
+)
+
+# Interaction Tracks
+interaction_track_stim <- InteractionTrack(hic_data$stim, name = "HiC Stimulated", chromosome = chrom)
+interaction_track_unstim <- InteractionTrack(hic_data$unstim, name = "HiC Unstimulated", chromosome = chrom)
+
+displayPars(interaction_track_stim) <- list(plot.outside = FALSE,background.title="#FFB3B3", col="#FFB3B3",fill ="#C63C51",col.interactions="#C63C51",col.anchors.fill = "#D95F59",col.anchors.line="#D95F59",rotation.title = 0)
+
+displayPars(interaction_track_unstim) <- list(plot.outside = FALSE,background.title="#FFB3B3", col="#FFB3B3",fill ="#C63C51",col.interactions="#C63C51",col.anchors.fill = "#D95F59",col.anchors.line="#D95F59",rotation.title = 0)
+
+
+```
+
+For Chip-seq track
+
+```{r}
+
+# ChIP-seq Track Function
+chipseq_track <- function(chipseq_data, name_of_track, fill_color, background_title_color, ylim_chip) {
+  DataTrack(
+    chipseq_data, chromosome = chrom, from = minbase, to = maxbase,
+    name = name_of_track, fill = fill_color, background.title = background_title_color,
+    col.histogram = fill_color, type = "hist", ylim = ylim_chip, alpha = 1
+  )
+}
+
+# Define colors and y-limits for the tracks
+track_colors <- list(
+  H3K4me3 = list(fill = "#5C7285", background = "#5C7285", ylim = c(0.1, 39)),
+  H3K27ac = list(fill = "#659287", background = "#659287", ylim = c(0.1, 48)),
+  H3K4me1 = list(fill = "#ADB2D4", background = "#ADB2D4", ylim = c(0.1, 34)),
+  H3K27me3 = list(fill = "#DEAA79", background = "#DEAA79", ylim = c(0.1, 19))
+)
+
+# Create ChIP-seq tracks for all samples and marks
+chipseq_tracks <- list()
+for (sample in names(chip_data)) {
+  for (mark in names(chip_data[[sample]])) {
+    track_name <- paste(mark, sample, sep = " \n")
+    chipseq_tracks[[track_name]] <- chipseq_track(
+      chip_data[[sample]][[mark]], track_name,
+      track_colors[[mark]]$fill, track_colors[[mark]]$background,
+      track_colors[[mark]]$ylim
+    )
+  }
+}
+
+# Accessing tracks
+RA_shoulder_H3K27ac_track <- chipseq_tracks[["H3K27ac \nRA_shoulder"]]
+RA_shoulder_H3K27me3_track <- chipseq_tracks[["H3K27me3 \nRA_shoulder"]]
+RA_shoulder_H3K4me3_track <- chipseq_tracks[["H3K4me3 \nRA_shoulder"]]
+RA_shoulder_H3K4me1_track <- chipseq_tracks[["H3K4me1 \nRA_shoulder"]]
+
+RA_hand_H3K27ac_track <- chipseq_tracks[["H3K27ac \nRA_hand"]]
+RA_hand_H3K27me3_track <- chipseq_tracks[["H3K27me3 \nRA_hand"]]
+RA_hand_H3K4me3_track <- chipseq_tracks[["H3K4me3 \nRA_hand"]]
+RA_hand_H3K4me1_track <- chipseq_tracks[["H3K4me1 \nRA_hand"]]
+
+RA_knee_H3K27ac_track <- chipseq_tracks[["H3K27ac \nRA_knee"]]
+RA_knee_H3K27me3_track <- chipseq_tracks[["H3K27me3 \nRA_knee"]]
+RA_knee_H3K4me3_track <- chipseq_tracks[["H3K4me3 \nRA_knee"]]
+RA_knee_H3K4me1_track <- chipseq_tracks[["H3K4me1 \nRA_knee"]]
+
+OA_shoulder_H3K27ac_track <- chipseq_tracks[["H3K27ac \nOA_shoulder"]]
+OA_shoulder_H3K27me3_track <- chipseq_tracks[["H3K27me3 \nOA_shoulder"]]
+OA_shoulder_H3K4me3_track <- chipseq_tracks[["H3K4me3 \nOA_shoulder"]]
+OA_shoulder_H3K4me1_track <- chipseq_tracks[["H3K4me1 \nOA_shoulder"]]
+
+OA_hand_H3K27ac_track <- chipseq_tracks[["H3K27ac \nOA_hand"]]
+OA_hand_H3K27me3_track <- chipseq_tracks[["H3K27me3 \nOA_hand"]]
+OA_hand_H3K4me3_track <- chipseq_tracks[["H3K4me3 \nOA_hand"]]
+OA_hand_H3K4me1_track <- chipseq_tracks[["H3K4me1 \nOA_hand"]]
+
+OA_knee_H3K27ac_track <- chipseq_tracks[["H3K27ac \nOA_knee"]]
+OA_knee_H3K27me3_track <- chipseq_tracks[["H3K27me3 \nOA_knee"]]
+OA_knee_H3K4me3_track <- chipseq_tracks[["H3K4me3 \nOA_knee"]]
+OA_knee_H3K4me1_track <- chipseq_tracks[["H3K4me1 \nOA_knee"]]
+
+Healthy_H3K27ac_track <- chipseq_tracks[["H3K27ac \nHealthy"]]
+Healthy_H3K27me3_track <- chipseq_tracks[["H3K27me3 \nHealthy"]]
+Healthy_H3K4me3_track <- chipseq_tracks[["H3K4me3 \nHealthy"]]
+Healthy_H3K4me1_track <- chipseq_tracks[["H3K4me1 \nHealthy"]]
+
+
+```
+
+visualize the tracks
+
+```{r}
+tracks_healthy_RA <- list(
+  methTrack,
+  Healthy_H3K4me3_track,
+  #RA_shoulder_H3K4me3_track,
+  #RA_hand_H3K4me3_track,
+  RA_knee_H3K4me3_track,
+  Healthy_H3K27ac_track,
+  #RA_shoulder_H3K27ac_track,
+  #RA_hand_H3K27ac_track,
+  RA_knee_H3K27ac_track,
+  # Healthy_H3K4me1_track,
+  # RA_shoulder_H3K4me1_track,
+  # RA_hand_H3K4me1_track,
+  # RA_knee_H3K4me1_track,
+  # Healthy_H3K27me3_track,
+  # RA_shoulder_H3K27me3_track,
+  # RA_hand_H3K27me3_track,
+  # RA_knee_H3K27me3_track,
+  #SNPs_track
+  rTrack
+  #interaction_track_unstim,interaction_track_stim
+)
+
+sizes_healthy_RA <- c(
+  3,
+  1, 1, 1, 1,
+  #1, 1, 1, 1,
+  # 1, 1, 1, 1,
+  # 1, 1, 1, 1,
+  0.5
+ # 0.5,
+ # 1,1
+)
+
+# Plot the tracks for healthy RA
+png(paste0(ucsc_locus,"_healthy_RA_","revisited.png"), width = 6, height = 5, units = "in", res = 1000, bg = "transparent")
+
+plotTracks(tracks_healthy_RA, from = minbase,to = maxbase, sizes = sizes_healthy_RA, extend.left = 1, extend.right = 1, fontsize = 12, showAxis = FALSE)
+
+# Close the PDF device
+dev.off()
+
+```
+
+```{r}
+#or with RA and OA 
+
+tracks_RA_OA <- list(
+  methTrack,
+  Healthy_H3K4me3_track,
+  RA_knee_H3K4me3_track,
+  OA_knee_H3K4me3_track,
+  Healthy_H3K27ac_track,
+  RA_knee_H3K27ac_track,
+  OA_knee_H3K27ac_track,
+  # Healthy_H3K4me1_track,
+  # RA_knee_H3K4me1_track,
+  # OA_knee_H3K4me1_track,
+  # Healthy_H3K27me3_track,
+  # RA_knee_H3K27me3_track,
+  # OA_knee_H3K27me3_track,
+ # SNPs_track,
+  rTrack
+#  interaction_track_unstim,interaction_track_stim
+)
+
+sizes_RA_OA <- c(
+  3,
+  1, 1, 1,
+  1, 1, 1,
+  # 1, 1, 1, 
+  # 1, 1, 1,
+  #0.5,
+  1
+  #1,1
+)
+
+#plot tracks for RA OA
+png(paste0(ucsc_locus,"_OA_RA_","general_with_OA_methyl_knee.png"), width = 5, height = 4, units = "in", res = 300, bg = "transparent")
+
+plotTracks(tracks_RA_OA, from = minbase,to = maxbase, sizes = sizes_RA_OA, extend.left = 1, extend.right = 1, fontsize = 12, showAxis = FALSE,panel.only=FALSE)
+
+dev.off()
+```
+
